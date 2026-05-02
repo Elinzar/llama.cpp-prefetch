@@ -905,6 +905,10 @@ static bool ggml_backend_sched_prefetch_slot_ensure_experts(ggml_backend_sched_p
     return true;
 }
 
+static bool ggml_backend_sched_prefetch_is_decode(const struct ggml_tensor * node) {
+    return node != NULL && node->ne[1] == 1;
+}
+
 static bool ggml_backend_sched_prefetch_allowed(ggml_backend_sched_t sched, ggml_backend_t split_backend, const struct ggml_tensor * node, const struct ggml_tensor * input) {
     if (!sched->prefetch_weights || node == NULL || input == NULL) {
         return false;
@@ -915,7 +919,7 @@ static bool ggml_backend_sched_prefetch_allowed(ggml_backend_sched_t sched, ggml
     if (node->op != GGML_OP_MUL_MAT && node->op != GGML_OP_MUL_MAT_ID) {
         return false;
     }
-    if (node->ne[1] < sched->prefetch_min_batch) {
+    if (!ggml_backend_sched_prefetch_is_decode(node) && node->ne[1] < sched->prefetch_min_batch) {
         return false;
     }
     if (sched->prefetch_max_bytes > 0 && ggml_nbytes(input) > sched->prefetch_max_bytes) {
@@ -929,12 +933,13 @@ static void ggml_backend_sched_prefetch_log_once(ggml_backend_sched_t sched, ggm
         return;
     }
 
-    GGML_LOG_INFO("%s: prefetch enabled=yes backend=%s async-copy=%s mmap-compatible=%s min-batch=%d max-mib=%zu moe-active-stats=%s\n",
+    GGML_LOG_INFO("%s: prefetch enabled=yes backend=%s async-copy=%s mmap-compatible=%s min-batch=%d decode=%s max-mib=%zu moe-active-stats=%s\n",
             __func__,
             ggml_backend_name(split_backend),
             split_backend->iface.cpy_tensor_async ? "yes" : "no",
             sched->prefetch_mmap ? "no" : "yes",
             sched->prefetch_min_batch,
+            "yes",
             sched->prefetch_max_bytes == 0 ? 0 : sched->prefetch_max_bytes / (1024 * 1024),
             "yes");
     sched->prefetch_logged = true;
