@@ -1446,8 +1446,26 @@ void common_set_adapter_lora(struct llama_context * ctx, std::vector<common_adap
     llama_set_adapters_lora(ctx, loras.data(), loras.size(), scales.data());
 }
 
+static void common_set_prefetch_env(const common_params & params) {
+#if defined(_WIN32)
+    _putenv_s("GGML_SCHED_PREFETCH_WEIGHTS", params.prefetch_weights ? "1" : "0");
+    _putenv_s("GGML_SCHED_PREFETCH_STATS", params.prefetch_weights_stats ? "1" : "0");
+    _putenv_s("GGML_SCHED_PREFETCH_MIN_BATCH", std::to_string(params.prefetch_weights_min_batch).c_str());
+    _putenv_s("GGML_SCHED_PREFETCH_MAX_MIB", std::to_string(params.prefetch_weights_max_mib).c_str());
+    _putenv_s("GGML_SCHED_PREFETCH_MMAP", params.use_mmap ? "1" : "0");
+#else
+    setenv("GGML_SCHED_PREFETCH_WEIGHTS", params.prefetch_weights ? "1" : "0", 1);
+    setenv("GGML_SCHED_PREFETCH_STATS", params.prefetch_weights_stats ? "1" : "0", 1);
+    setenv("GGML_SCHED_PREFETCH_MIN_BATCH", std::to_string(params.prefetch_weights_min_batch).c_str(), 1);
+    setenv("GGML_SCHED_PREFETCH_MAX_MIB", std::to_string(params.prefetch_weights_max_mib).c_str(), 1);
+    setenv("GGML_SCHED_PREFETCH_MMAP", params.use_mmap ? "1" : "0", 1);
+#endif
+}
+
 struct llama_model_params common_model_params_to_llama(common_params & params) {
     auto mparams = llama_model_default_params();
+
+    common_set_prefetch_env(params);
 
     if (!params.devices.empty()) {
         mparams.devices = params.devices.data();

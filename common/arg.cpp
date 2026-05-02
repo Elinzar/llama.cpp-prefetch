@@ -2241,6 +2241,34 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_MMAP"));
     add_opt(common_arg(
+        {"-pw", "--prefetch-weights"},
+        "stage reusable host weights in device buffers during large-batch evals when the backend can reuse them",
+        [](common_params & params) {
+            params.prefetch_weights = true;
+        }
+    ).set_env("LLAMA_ARG_PREFETCH_WEIGHTS"));
+    add_opt(common_arg(
+        {"--prefetch-weights-stats"},
+        "log weight staging statistics when --prefetch-weights is enabled",
+        [](common_params & params) {
+            params.prefetch_weights_stats = true;
+        }
+    ).set_env("LLAMA_ARG_PREFETCH_WEIGHTS_STATS"));
+    add_opt(common_arg(
+        {"--prefetch-weights-min-batch"}, "N",
+        string_format("minimum token batch before reusable host-weight staging is allowed (default: %d)", params.prefetch_weights_min_batch),
+        [](common_params & params, int value) {
+            params.prefetch_weights_min_batch = value;
+        }
+    ).set_env("LLAMA_ARG_PREFETCH_WEIGHTS_MIN_BATCH"));
+    add_opt(common_arg(
+        {"--prefetch-weights-max-mib"}, "N",
+        string_format("skip reusable host-weight staging for tensors larger than N MiB (0 disables the cap, default: %d)", params.prefetch_weights_max_mib),
+        [](common_params & params, int value) {
+            params.prefetch_weights_max_mib = value;
+        }
+    ).set_env("LLAMA_ARG_PREFETCH_WEIGHTS_MAX_MIB"));
+    add_opt(common_arg(
         {"-dio", "--direct-io"},
         {"-ndio", "--no-direct-io"},
         string_format("use DirectIO if available. (default: %s)", params.use_direct_io ? "enabled" : "disabled"),

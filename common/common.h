@@ -544,6 +544,10 @@ struct common_params {
     bool use_mmap          = true;  // enable mmap to use filesystem cache
     bool use_direct_io     = false; // read from disk without buffering
     bool use_mlock         = false; // use mlock to keep model in memory
+    bool prefetch_weights  = false; // stage reusable host weights in device buffers when possible
+    bool prefetch_weights_stats = false; // log scheduler staging stats
+    int  prefetch_weights_min_batch = 2; // minimum token batch before staging is allowed
+    int  prefetch_weights_max_mib = 0; // 0 disables the per-tensor staging size cap
     bool verbose_prompt    = false; // print prompt tokens before generation
     bool display_prompt    = true;  // print prompt before generation
     bool no_kv_offload     = false; // disable KV offloading

@@ -115,6 +115,22 @@ template <typename T> static T stdev(const std::vector<T> & v) {
     return stdev;
 }
 
+static void set_prefetch_env(bool enabled, bool stats, int min_batch, int max_mib, bool use_mmap) {
+#ifdef _WIN32
+    _putenv_s("GGML_SCHED_PREFETCH_WEIGHTS", enabled ? "1" : "0");
+    _putenv_s("GGML_SCHED_PREFETCH_STATS", stats ? "1" : "0");
+    _putenv_s("GGML_SCHED_PREFETCH_MIN_BATCH", std::to_string(min_batch).c_str());
+    _putenv_s("GGML_SCHED_PREFETCH_MAX_MIB", std::to_string(max_mib).c_str());
+    _putenv_s("GGML_SCHED_PREFETCH_MMAP", use_mmap ? "1" : "0");
+#else
+    setenv("GGML_SCHED_PREFETCH_WEIGHTS", enabled ? "1" : "0", 1);
+    setenv("GGML_SCHED_PREFETCH_STATS", stats ? "1" : "0", 1);
+    setenv("GGML_SCHED_PREFETCH_MIN_BATCH", std::to_string(min_batch).c_str(), 1);
+    setenv("GGML_SCHED_PREFETCH_MAX_MIB", std::to_string(max_mib).c_str(), 1);
+    setenv("GGML_SCHED_PREFETCH_MMAP", use_mmap ? "1" : "0", 1);
+#endif
+}
+
 static std::string get_cpu_info() {
     std::vector<std::string> cpu_list;
     for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
@@ -343,6 +359,10 @@ struct cmd_params {
     std::vector<std::vector<llama_model_tensor_buft_override>> tensor_buft_overrides;
     std::vector<bool>                use_mmap;
     std::vector<bool>                use_direct_io;
+    std::vector<bool>                prefetch_weights;
+    std::vector<bool>                prefetch_weights_stats;
+    std::vector<int>                 prefetch_weights_min_batch;
+    std::vector<int>                 prefetch_weights_max_mib;
     std::vector<bool>                embeddings;
     std::vector<bool>                no_op_offload;
     std::vector<bool>                no_host;
@@ -387,6 +407,10 @@ static const cmd_params cmd_params_defaults = {
     /* tensor_buft_overrides*/ { std::vector<llama_model_tensor_buft_override>{ { nullptr, nullptr } } },
     /* use_mmap             */ { true },
     /* use_direct_io        */ { false },
+    /* prefetch_weights     */ { false },
+    /* prefetch_weights_stats */ { false },
+    /* prefetch_weights_min_batch */ { 2 },
+    /* prefetch_weights_max_mib */ { 0 },
     /* embeddings           */ { false },
     /* no_op_offload        */ { false },
     /* no_host              */ { false },
@@ -455,6 +479,10 @@ static void print_usage(int /* argc */, char ** argv) {
     printf("  -dev, --device <dev0/dev1/...>              (default: auto)\n");
     printf("  -mmp, --mmap <0|1>                          (default: %s)\n", join(cmd_params_defaults.use_mmap, ",").c_str());
     printf("  -dio, --direct-io <0|1>                     (default: %s)\n", join(cmd_params_defaults.use_direct_io, ",").c_str());
+    printf("  -pw, --prefetch-weights <0|1>               (default: %s)\n", join(cmd_params_defaults.prefetch_weights, ",").c_str());
+    printf("  --prefetch-weights-stats <0|1>              (default: %s)\n", join(cmd_params_defaults.prefetch_weights_stats, ",").c_str());
+    printf("  --prefetch-weights-min-batch <n>            (default: %s)\n", join(cmd_params_defaults.prefetch_weights_min_batch, ",").c_str());
+    printf("  --prefetch-weights-max-mib <n>              (default: %s)\n", join(cmd_params_defaults.prefetch_weights_max_mib, ",").c_str());
     printf("  -embd, --embeddings <0|1>                   (default: %s)\n", join(cmd_params_defaults.embeddings, ",").c_str());
     printf("  -ts, --tensor-split <ts0/ts1/..>            (default: 0)\n");
     printf("  -ot --override-tensor <tensor name pattern>=<buffer type>;...\n");
@@ -809,6 +837,34 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
                 }
                 auto p = string_split<bool>(argv[i], split_delim);
                 params.use_direct_io.insert(params.use_direct_io.end(), p.begin(), p.end());
+            } else if (arg == "-pw" || arg == "--prefetch-weights") {
+                if (++i >= argc) {
+                    invalid_param = true;
+                    break;
+                }
+                auto p = string_split<bool>(argv[i], split_delim);
+                params.prefetch_weights.insert(params.prefetch_weights.end(), p.begin(), p.end());
+            } else if (arg == "--prefetch-weights-stats") {
+                if (++i >= argc) {
+                    invalid_param = true;
+                    break;
+                }
+                auto p = string_split<bool>(argv[i], split_delim);
+                params.prefetch_weights_stats.insert(params.prefetch_weights_stats.end(), p.begin(), p.end());
+            } else if (arg == "--prefetch-weights-min-batch") {
+                if (++i >= argc) {
+                    invalid_param = true;
+                    break;
+                }
+                auto p = parse_int_range(argv[i]);
+                params.prefetch_weights_min_batch.insert(params.prefetch_weights_min_batch.end(), p.begin(), p.end());
+            } else if (arg == "--prefetch-weights-max-mib") {
+                if (++i >= argc) {
+                    invalid_param = true;
+                    break;
+                }
+                auto p = parse_int_range(argv[i]);
+                params.prefetch_weights_max_mib.insert(params.prefetch_weights_max_mib.end(), p.begin(), p.end());
             } else if (arg == "-embd" || arg == "--embeddings") {
                 if (++i >= argc) {
                     invalid_param = true;
@@ -1089,6 +1145,18 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
     if (params.use_direct_io.empty()) {
         params.use_direct_io = cmd_params_defaults.use_direct_io;
     }
+    if (params.prefetch_weights.empty()) {
+        params.prefetch_weights = cmd_params_defaults.prefetch_weights;
+    }
+    if (params.prefetch_weights_stats.empty()) {
+        params.prefetch_weights_stats = cmd_params_defaults.prefetch_weights_stats;
+    }
+    if (params.prefetch_weights_min_batch.empty()) {
+        params.prefetch_weights_min_batch = cmd_params_defaults.prefetch_weights_min_batch;
+    }
+    if (params.prefetch_weights_max_mib.empty()) {
+        params.prefetch_weights_max_mib = cmd_params_defaults.prefetch_weights_max_mib;
+    }
     if (params.embeddings.empty()) {
         params.embeddings = cmd_params_defaults.embeddings;
     }
@@ -1144,6 +1212,10 @@ struct cmd_params_instance {
     std::vector<llama_model_tensor_buft_override> tensor_buft_overrides;
     bool               use_mmap;
     bool               use_direct_io;
+    bool               prefetch_weights;
+    bool               prefetch_weights_stats;
+    int                prefetch_weights_min_batch;
+    int                prefetch_weights_max_mib;
     bool               embeddings;
     bool               no_op_offload;
     bool               no_host;
@@ -1248,6 +1320,10 @@ static std::vector<cmd_params_instance> get_cmd_params_instances(const cmd_param
     for (const auto & ot : params.tensor_buft_overrides)
     for (const auto & mmp : params.use_mmap)
     for (const auto & dio : params.use_direct_io)
+    for (const auto & pwe : params.prefetch_weights)
+    for (const auto & pws : params.prefetch_weights_stats)
+    for (const auto & pwmn : params.prefetch_weights_min_batch)
+    for (const auto & pwmx : params.prefetch_weights_max_mib)
     for (const auto & noh : params.no_host)
     for (const auto & embd : params.embeddings)
     for (const auto & nopo : params.no_op_offload)
@@ -1290,6 +1366,10 @@ static std::vector<cmd_params_instance> get_cmd_params_instances(const cmd_param
                 /* .tensor_buft_overrides = */ ot,
                 /* .use_mmap     = */ mmp,
                 /* .use_direct_io= */ dio,
+                /* .prefetch_weights = */ pwe,
+                /* .prefetch_weights_stats = */ pws,
+                /* .prefetch_weights_min_batch = */ pwmn,
+                /* .prefetch_weights_max_mib = */ pwmx,
                 /* .embeddings   = */ embd,
                 /* .no_op_offload= */ nopo,
                 /* .no_host      = */ noh,
@@ -1327,6 +1407,10 @@ static std::vector<cmd_params_instance> get_cmd_params_instances(const cmd_param
                 /* .tensor_buft_overrides = */ ot,
                 /* .use_mmap     = */ mmp,
                 /* .use_direct_io= */ dio,
+                /* .prefetch_weights = */ pwe,
+                /* .prefetch_weights_stats = */ pws,
+                /* .prefetch_weights_min_batch = */ pwmn,
+                /* .prefetch_weights_max_mib = */ pwmx,
                 /* .embeddings   = */ embd,
                 /* .no_op_offload= */ nopo,
                 /* .no_host      = */ noh,
@@ -1364,6 +1448,10 @@ static std::vector<cmd_params_instance> get_cmd_params_instances(const cmd_param
                 /* .tensor_buft_overrides = */ ot,
                 /* .use_mmap     = */ mmp,
                 /* .use_direct_io= */ dio,
+                /* .prefetch_weights = */ pwe,
+                /* .prefetch_weights_stats = */ pws,
+                /* .prefetch_weights_min_batch = */ pwmn,
+                /* .prefetch_weights_max_mib = */ pwmx,
                 /* .embeddings   = */ embd,
                 /* .no_op_offload= */ nopo,
                 /* .no_host      = */ noh,
@@ -1406,6 +1494,10 @@ struct test {
     std::vector<llama_model_tensor_buft_override> tensor_buft_overrides;
     bool                     use_mmap;
     bool                     use_direct_io;
+    bool                     prefetch_weights;
+    bool                     prefetch_weights_stats;
+    int                      prefetch_weights_min_batch;
+    int                      prefetch_weights_max_mib;
     bool                     embeddings;
     bool                     no_op_offload;
     bool                     no_host;
@@ -1446,6 +1538,10 @@ struct test {
         tensor_buft_overrides = inst.tensor_buft_overrides;
         use_mmap       = inst.use_mmap;
         use_direct_io  = inst.use_direct_io;
+        prefetch_weights = inst.prefetch_weights;
+        prefetch_weights_stats = inst.prefetch_weights_stats;
+        prefetch_weights_min_batch = inst.prefetch_weights_min_batch;
+        prefetch_weights_max_mib = inst.prefetch_weights_max_mib;
         embeddings     = inst.embeddings;
         no_op_offload  = inst.no_op_offload;
         no_host        = inst.no_host;
@@ -2209,6 +2305,12 @@ int main(int argc, char ** argv) {
         if (params.progress) {
             fprintf(stderr, "llama-bench: benchmark %d/%zu: starting\n", params_idx, params_count);
         }
+        set_prefetch_env(
+            inst.prefetch_weights,
+            inst.prefetch_weights_stats,
+            inst.prefetch_weights_min_batch,
+            inst.prefetch_weights_max_mib,
+            inst.use_mmap);
         auto mparams = inst.to_llama_mparams();
         auto cparams = inst.to_llama_cparams();
 
