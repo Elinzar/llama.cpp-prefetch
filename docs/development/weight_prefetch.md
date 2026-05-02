@@ -48,6 +48,58 @@ Typical companion flags:
 - dense partial offload: `-ot 'blk\.[0-9]+\.ffn_.*=CPU'`
 - MoE partial offload: `-ncmoe 999`
 
+## What The Knobs Do
+
+### Prefetch knobs
+
+- `-pw`, `--prefetch-weights`
+  Turns the feature on. Without this flag, the branch behaves like normal `llama.cpp`.
+
+- `--prefetch-weights-stats`
+  Emits prefetch-related logging. Use it when you are trying to confirm that the path is active and to see whether the backend is actually taking the staged-copy path.
+
+- `--prefetch-weights-min-batch N`
+  Minimum batch size that must be reached before prefetch becomes active for prompt processing. Lower values make the feature trigger more often, including smaller prompts, but can add overhead when there is not enough reuse to pay the copy cost back. Higher values keep the feature focused on large prompt-processing work.
+
+- `--prefetch-weights-max-mib N`
+  Caps how much staging memory the feature is allowed to consume. Larger values can help when more weights need to be queued ahead, but they also compete with model, KV, and compute buffers. On smaller GPUs, keeping this moderate is safer.
+
+### Placement knobs
+
+- `--no-mmap`
+  Strongly recommended for this feature. With mmap-backed weights, the host-resident path was weaker and less predictable in testing. The measured wins in this guide used `--no-mmap`.
+
+- `-ot 'blk\.[0-9]+\.ffn_.*=CPU'`
+  Dense-only placement trick. This forces dense FFN tensors to stay host-side, which creates the exact partial-offload shape that prefetch is meant to accelerate. The GPU still runs the compute; the FFN weights just stop fully occupying VRAM.
+
+- `-ncmoe 999`
+  MoE-only placement trick. This keeps MoE experts host-side so the GPU can stage the active experts in for prompt processing. This is the highest-value setup validated in the benchmarks below.
+
+### Workload-shape knobs
+
+- `-b N`
+  Logical prompt-processing batch size. This is one of the main throughput knobs for prefill. Larger values usually improve reuse and help prefetch matter more, until memory pressure or copy pressure becomes the limit.
+
+- `-ub N`
+  Physical microbatch size. This is usually the most sensitive stability knob. Larger `ubatch` can improve GPU utilization, but it also increases staging pressure and, for MoE, can activate more experts at once. If a setup becomes unstable, reduce `-ub` before reducing `-b`.
+
+- `-c N`
+  Runtime context size. This does not make prefetch stronger by itself, but it changes KV memory pressure. Large context can crowd out the headroom needed for the model and staging buffers, especially on 8 GiB-class GPUs.
+
+- `-n N`
+  Generation tokens in `llama-bench`. Use `-n 0` to isolate prompt-processing performance. Use small nonzero values like `-n 64` to sanity-check decode behavior after changing prefetch knobs.
+
+### Tuning order
+
+If you are exploring the feature manually, the safest order is:
+
+1. enable the intended host placement shape
+2. turn on `--no-mmap`
+3. enable `-pw`
+4. raise `-b`
+5. adjust `-ub`
+6. only then experiment with `--prefetch-weights-min-batch` or `--prefetch-weights-max-mib`
+
 ## Recommended Starting Points
 
 Dense:
